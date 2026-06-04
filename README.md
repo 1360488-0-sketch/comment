@@ -14,6 +14,7 @@
             --primary: #2563eb;
             --primary-hover: #1d4ed8;
             --danger: #ef4444;
+            --success: #10b981;
             --radius: 10px;
             --shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
         }
@@ -120,6 +121,33 @@
             background: var(--primary-hover);
         }
 
+        .stats-bar {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+        .stat-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 12px 20px;
+            text-align: center;
+            min-width: 80px;
+            box-shadow: var(--shadow);
+        }
+        .stat-card .stat-num {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+        .stat-card .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-light);
+        }
+        .stat-total .stat-num { color: var(--text); }
+        .stat-active .stat-num { color: var(--primary); }
+        .stat-done .stat-num { color: var(--success); }
+
         .toolbar {
             display: flex;
             flex-wrap: wrap;
@@ -146,6 +174,37 @@
             background: var(--text);
             color: #fff;
             border-color: var(--text);
+        }
+        .sort-bar {
+            display: flex;
+            gap: 6px;
+        }
+        .sort-btn {
+            padding: 7px 18px;
+            border: 2px solid var(--border);
+            border-radius: 20px;
+            background: #fff;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .sort-btn.active-sort {
+            background: var(--primary);
+            color: #fff;
+            border-color: var(--primary);
+        }
+        .search-box input {
+            padding: 7px 14px;
+            border: 2px solid var(--border);
+            border-radius: 20px;
+            font-size: 13px;
+            outline: none;
+            width: 180px;
+            transition: border 0.2s;
+        }
+        .search-box input:focus {
+            border-color: var(--primary);
         }
         .record-count {
             color: var(--text-light);
@@ -235,6 +294,9 @@
                 flex-direction: column;
                 align-items: flex-start;
             }
+            .search-box input {
+                width: 100%;
+            }
         }
     </style>
 </head>
@@ -248,11 +310,11 @@
             <div class="form-row">
                 <div class="form-group">
                     <label for="inputContent">出售內容 <span class="required">*必填</span></label>
-                    <input type="text" id="inputContent" placeholder="例如：九成新書桌">
+                    <input type="text" id="inputContent" placeholder="例如：九成新書桌" maxlength="50">
                 </div>
                 <div class="form-group">
                     <label for="inputPrice">出售價錢 <span class="required">*必填</span></label>
-                    <input type="text" id="inputPrice" placeholder="例如：NT$500">
+                    <input type="text" id="inputPrice" placeholder="例如：NT$500" maxlength="30">
                 </div>
                 <div class="form-group">
                     <label for="inputCategory">分類 <span class="required">*必填</span></label>
@@ -266,11 +328,24 @@
             <button class="btn-submit" id="btnAdd">➕ 新增二手物品</button>
         </div>
 
+        <div class="stats-bar" id="statsBar">
+            <div class="stat-card stat-total"><div class="stat-num" id="statTotal">0</div><div class="stat-label">全部</div></div>
+            <div class="stat-card stat-active"><div class="stat-num" id="statActive">0</div><div class="stat-label">出售中</div></div>
+            <div class="stat-card stat-done"><div class="stat-num" id="statDone">0</div><div class="stat-label">已完成</div></div>
+        </div>
+
         <div class="toolbar">
             <div class="filter-bar" id="filterBar">
                 <button class="filter-btn active-filter" data-filter="all">全部</button>
                 <button class="filter-btn" data-filter="active">出售中</button>
                 <button class="filter-btn" data-filter="done">已完成</button>
+            </div>
+            <div class="sort-bar" id="sortBar">
+                <button class="sort-btn active-sort" data-sort="newest">最新</button>
+                <button class="sort-btn" data-sort="oldest">最舊</button>
+            </div>
+            <div class="search-box">
+                <input type="text" id="searchInput" placeholder="🔍 搜尋內容...">
             </div>
             <span class="record-count" id="recordCount">共 0 筆</span>
         </div>
@@ -280,18 +355,29 @@
 
     <script>
         (function() {
+            // ========== CONFIG ==========
+            const APPS_SCRIPT_URL = "PASTE_YOUR_APPS_SCRIPT_URL_HERE";
             const STORAGE_KEY = 'records';
 
+            // ========== DOM ==========
             const inputContent = document.getElementById('inputContent');
             const inputPrice = document.getElementById('inputPrice');
             const inputCategory = document.getElementById('inputCategory');
             const btnAdd = document.getElementById('btnAdd');
             const filterBar = document.getElementById('filterBar');
+            const sortBar = document.getElementById('sortBar');
+            const searchInput = document.getElementById('searchInput');
             const recordCount = document.getElementById('recordCount');
             const recordsContainer = document.getElementById('recordsContainer');
+            const statTotal = document.getElementById('statTotal');
+            const statActive = document.getElementById('statActive');
+            const statDone = document.getElementById('statDone');
 
             let currentFilter = 'all';
+            let currentSort = 'newest';
+            let searchKeyword = '';
 
+            // ========== CORE: createRecord (unchanged) ==========
             function createRecord(formData) {
                 return {
                     id: crypto.randomUUID ? crypto.randomUUID() : 'id_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
@@ -303,13 +389,70 @@
                 };
             }
 
-            function saveData(record) {
-                const records = loadData();
-                records.push(record);
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+            // ========== Backend Connectors ==========
+
+            async function syncToSheet(payload) {
+                try {
+                    const res = await fetch(APPS_SCRIPT_URL, {
+                        method: "POST",
+                        headers: { "Content-Type": "text/plain" },
+                        body: JSON.stringify(payload)
+                    });
+                    const data = await res.json();
+                    if (!data.ok) console.warn("syncToSheet error:", data.error);
+                    return data;
+                } catch (err) {
+                    console.warn("syncToSheet network error:", err.message);
+                    return { ok: false, error: err.message };
+                }
             }
 
-            function loadData() {
+            async function fetchRecordsFromSheet() {
+                const res = await fetch(APPS_SCRIPT_URL);
+                const data = await res.json();
+                if (!data.ok || !Array.isArray(data.records)) {
+                    throw new Error(data.error || "Invalid response from Sheet");
+                }
+                const normalized = data.records.map(normalizeRecord);
+                return normalized;
+            }
+
+            function normalizeRecord(record) {
+                const lookup = {};
+                Object.keys(record).forEach(function(key) {
+                    lookup[key.toLowerCase().trim()] = record[key];
+                });
+
+                const result = {
+                    id:        getCaseInsensitive(lookup, 'id'),
+                    createdAt: getCaseInsensitive(lookup, 'createdat'),
+                    status:    getCaseInsensitive(lookup, 'status'),
+                    content:   getCaseInsensitive(lookup, 'content'),
+                    price:     getCaseInsensitive(lookup, 'price'),
+                    category:  getCaseInsensitive(lookup, 'category')
+                };
+
+                if (result.status !== 'active' && result.status !== 'done') {
+                    result.status = 'active';
+                }
+
+                return result;
+            }
+
+            function getCaseInsensitive(lookup, lowerKey) {
+                if (lookup[lowerKey] !== undefined) return lookup[lowerKey];
+                const keys = Object.keys(lookup);
+                for (let i = 0; i < keys.length; i++) {
+                    if (keys[i].toLowerCase().trim() === lowerKey) {
+                        return lookup[keys[i]];
+                    }
+                }
+                return '';
+            }
+
+            // ========== localStorage helpers ==========
+
+            function loadLocalData() {
                 try {
                     const raw = localStorage.getItem(STORAGE_KEY);
                     if (!raw) return [];
@@ -320,14 +463,69 @@
                 }
             }
 
-            function updateRecord(id, changes) {
-                const records = loadData();
-                const idx = records.findIndex(r => r.id === id);
-                if (idx === -1) return;
-                records[idx] = { ...records[idx], ...changes };
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+            async function loadData() {
+                try {
+                    const remoteRecords = await fetchRecordsFromSheet();
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(remoteRecords));
+                    return remoteRecords;
+                } catch (err) {
+                    console.warn("Remote load failed, falling back to localStorage:", err.message);
+                    return loadLocalData();
+                }
             }
 
+            async function saveData(record) {
+                const result = await syncToSheet({ action: "create", record: record });
+                const records = loadLocalData();
+                records.push(record);
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+                return result;
+            }
+
+            async function updateRecord(id, changes) {
+                const result = await syncToSheet({ action: "update", id: id, changes: changes });
+                const records = loadLocalData();
+                const idx = records.findIndex(r => r.id === id);
+                if (idx !== -1) {
+                    records[idx] = { ...records[idx], ...changes };
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+                }
+                return result;
+            }
+
+            // ========== NEW: Sort ==========
+            function sortRecords(records) {
+                const sorted = [...records];
+                if (currentSort === 'newest') {
+                    sorted.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+                } else if (currentSort === 'oldest') {
+                    sorted.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+                }
+                return sorted;
+            }
+
+            // ========== Stats ==========
+            function updateStats(records) {
+                const total = records.length;
+                const active = records.filter(r => r.status === 'active').length;
+                const done = records.filter(r => r.status === 'done').length;
+                statTotal.textContent = total;
+                statActive.textContent = active;
+                statDone.textContent = done;
+            }
+
+            // ========== Search ==========
+            function applySearch(records) {
+                if (!searchKeyword.trim()) return records;
+                const kw = searchKeyword.trim().toLowerCase();
+                return records.filter(r =>
+                    r.content.toLowerCase().includes(kw) ||
+                    r.price.toLowerCase().includes(kw) ||
+                    r.category.toLowerCase().includes(kw)
+                );
+            }
+
+            // ========== RENDER ==========
             function renderList(recordsToShow) {
                 recordCount.textContent = `共 ${recordsToShow.length} 筆`;
 
@@ -356,10 +554,15 @@
                     const statusLabel = isDone ? '已完成' : '出售中';
                     const badgeClass = isDone ? 'badge-done' : 'badge-active';
                     const rowClass = isDone ? 'done-row' : '';
-                    const timeStr = new Date(r.createdAt).toLocaleString('zh-TW', {
-                        year: 'numeric', month: '2-digit', day: '2-digit',
-                        hour: '2-digit', minute: '2-digit'
-                    });
+                    let timeStr = '';
+                    try {
+                        timeStr = new Date(r.createdAt).toLocaleString('zh-TW', {
+                            year: 'numeric', month: '2-digit', day: '2-digit',
+                            hour: '2-digit', minute: '2-digit'
+                        });
+                    } catch (e) {
+                        timeStr = r.createdAt || '';
+                    }
 
                     html += `
                         <tr class="${rowClass}">
@@ -380,13 +583,14 @@
                 recordsContainer.innerHTML = html;
 
                 recordsContainer.querySelectorAll('.btn-toggle').forEach(btn => {
-                    btn.addEventListener('click', function() {
+                    btn.addEventListener('click', async function() {
                         const id = this.dataset.id;
-                        const record = loadData().find(r => r.id === id);
+                        const allRecords = await loadData();
+                        const record = allRecords.find(r => r.id === id);
                         if (!record) return;
                         const newStatus = record.status === 'active' ? 'done' : 'active';
-                        updateRecord(id, { status: newStatus });
-                        refreshUI();
+                        await updateRecord(id, { status: newStatus });
+                        await refreshUI();
                     });
                 });
             }
@@ -397,17 +601,24 @@
                 return div.innerHTML;
             }
 
-            function getFilteredRecords() {
-                const all = loadData();
-                if (currentFilter === 'all') return all;
-                return all.filter(r => r.status === currentFilter);
+            function getFilteredRecords(allRecords) {
+                let filtered = allRecords;
+                if (currentFilter !== 'all') {
+                    filtered = filtered.filter(r => r.status === currentFilter);
+                }
+                filtered = applySearch(filtered);
+                filtered = sortRecords(filtered);
+                return filtered;
             }
 
-            function refreshUI() {
-                renderList(getFilteredRecords());
+            async function refreshUI() {
+                const allRecords = await loadData();
+                const filtered = getFilteredRecords(allRecords);
+                updateStats(allRecords);
+                renderList(filtered);
             }
 
-            function handleAdd() {
+            async function handleAdd() {
                 const content = inputContent.value;
                 const price = inputPrice.value;
 
@@ -416,8 +627,18 @@
                     inputContent.focus();
                     return;
                 }
+                if (content.trim().length > 50) {
+                    alert('出售內容不可超過 50 字！');
+                    inputContent.focus();
+                    return;
+                }
                 if (!price.trim()) {
                     alert('請填寫「出售價錢」！');
+                    inputPrice.focus();
+                    return;
+                }
+                if (price.trim().length > 30) {
+                    alert('出售價錢不可超過 30 字！');
                     inputPrice.focus();
                     return;
                 }
@@ -428,23 +649,38 @@
                     category: inputCategory.value
                 });
 
-                saveData(record);
+                try {
+                    await saveData(record);
+                } catch (err) {
+                    console.error("saveData failed:", err);
+                    alert("儲存失敗：" + err.message);
+                    return;
+                }
 
                 inputContent.value = '';
                 inputPrice.value = '';
                 inputCategory.value = '生活';
                 inputContent.focus();
 
-                refreshUI();
+                await refreshUI();
             }
 
-            btnAdd.addEventListener('click', handleAdd);
+            // ========== EVENT BINDINGS ==========
+
+            btnAdd.addEventListener('click', function(e) {
+                e.preventDefault();
+                handleAdd().catch(err => {
+                    console.error("handleAdd error:", err);
+                });
+            });
 
             [inputContent, inputPrice].forEach(el => {
                 el.addEventListener('keydown', function(e) {
                     if (e.key === 'Enter') {
                         e.preventDefault();
-                        handleAdd();
+                        handleAdd().catch(err => {
+                            console.error("handleAdd error:", err);
+                        });
                     }
                 });
             });
@@ -457,6 +693,27 @@
                     refreshUI();
                 }
             });
+
+            sortBar.addEventListener('click', function(e) {
+                if (e.target.classList.contains('sort-btn')) {
+                    sortBar.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active-sort'));
+                    e.target.classList.add('active-sort');
+                    currentSort = e.target.dataset.sort;
+                    refreshUI();
+                }
+            });
+
+            searchInput.addEventListener('input', function() {
+                searchKeyword = this.value;
+                refreshUI();
+            });
+
+            // ========== INIT ==========
+            refreshUI();
+        })();
+    </script>
+</body>
+</html>
 
             refreshUI();
         })();
